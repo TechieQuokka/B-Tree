@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.exe
+*.dll
+*.so
+
+# Debug files
+debug_test
+debug_multiple
+debug_test.exe
+debug_multiple.exe
+
+# IDE files
+.vscode/
+.vs/
+*.vcxproj*
+*.sln
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Log files
+*.log
