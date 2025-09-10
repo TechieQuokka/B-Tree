@@ -32,6 +32,15 @@
 #include <unistd.h>
 #endif
 
+/* 메모리 블록 헤더 (할당 크기 추적용) */
+typedef struct memory_header {
+    size_t size;
+    uint32_t magic;  /* 메모리 오염 검사용 */
+} memory_header_t;
+
+#define MEMORY_MAGIC 0xDEADBEEF
+#define HEADER_SIZE sizeof(memory_header_t)
+
 /* 전역 메모리 통계 */
 static struct {
     atomic_size_t total_allocated;
@@ -41,35 +50,91 @@ static struct {
     atomic_flag lock;
 } g_memory_stats = {0};
 
-/* 기본 할당자 구현 - 간단한 버전 */
+/* 기본 할당자 구현 - 크기 추적 개선 */
 static void* default_alloc(size_t size) {
-    void *ptr = malloc(size);
-    if (ptr) {
-        g_memory_stats.current_usage += size;
-        g_memory_stats.total_allocated += size;
-        
-        if (g_memory_stats.current_usage > g_memory_stats.peak_usage) {
-            g_memory_stats.peak_usage = g_memory_stats.current_usage;
-        }
+    if (size == 0) return NULL;
+    
+    size_t total_size = size + HEADER_SIZE;
+    memory_header_t *header = (memory_header_t*)malloc(total_size);
+    if (!header) return NULL;
+    
+    /* 헤더 정보 설정 */
+    header->size = size;
+    header->magic = MEMORY_MAGIC;
+    
+    /* 통계 업데이트 */
+    g_memory_stats.current_usage += size;
+    g_memory_stats.total_allocated += size;
+    
+    if (g_memory_stats.current_usage > g_memory_stats.peak_usage) {
+        g_memory_stats.peak_usage = g_memory_stats.current_usage;
     }
-    return ptr;
+    
+    /* 실제 데이터 영역 포인터 반환 */
+    return (char*)header + HEADER_SIZE;
 }
 
 static void default_free(void *ptr) {
-    if (ptr) {
-        /* 간단하게 malloc으로 할당된 크기를 추적하지 않음 */
+    if (!ptr) return;
+    
+    /* 헤더 위치 계산 */
+    memory_header_t *header = (memory_header_t*)((char*)ptr - HEADER_SIZE);
+    
+    /* 메모리 오염 검사 */
+    if (header->magic != MEMORY_MAGIC) {
+        /* 메모리 오염 감지 - 단순히 free만 수행 */
         free(ptr);
-        g_memory_stats.total_freed += sizeof(void*);  /* 대략적인 크기 */
+        return;
     }
+    
+    /* 통계 업데이트 */
+    size_t size = header->size;
+    g_memory_stats.total_freed += size;
+    if (g_memory_stats.current_usage >= size) {
+        g_memory_stats.current_usage -= size;
+    }
+    
+    /* 메모리 해제 */
+    free(header);
 }
 
 static void* default_realloc(void *ptr, size_t new_size) {
-    void *new_ptr = realloc(ptr, new_size);
-    /* 간단한 통계만 유지 */
-    if (new_ptr) {
-        g_memory_stats.total_allocated += new_size;
+    if (!ptr) return default_alloc(new_size);
+    if (new_size == 0) {
+        default_free(ptr);
+        return NULL;
     }
-    return new_ptr;
+    
+    /* 헤더 위치 계산 */
+    memory_header_t *header = (memory_header_t*)((char*)ptr - HEADER_SIZE);
+    
+    /* 메모리 오염 검사 */
+    if (header->magic != MEMORY_MAGIC) {
+        /* 오염된 메모리 - 새로 할당 */
+        return default_alloc(new_size);
+    }
+    
+    size_t old_size = header->size;
+    size_t total_new_size = new_size + HEADER_SIZE;
+    
+    /* 헤더 포함하여 재할당 */
+    memory_header_t *new_header = (memory_header_t*)realloc(header, total_new_size);
+    if (!new_header) return NULL;
+    
+    /* 헤더 정보 업데이트 */
+    new_header->size = new_size;
+    new_header->magic = MEMORY_MAGIC;
+    
+    /* 통계 업데이트 */
+    g_memory_stats.total_allocated += new_size;
+    g_memory_stats.total_freed += old_size;
+    g_memory_stats.current_usage = g_memory_stats.current_usage - old_size + new_size;
+    
+    if (g_memory_stats.current_usage > g_memory_stats.peak_usage) {
+        g_memory_stats.peak_usage = g_memory_stats.current_usage;
+    }
+    
+    return (char*)new_header + HEADER_SIZE;
 }
 
 static btree_allocator_t g_default_allocator = {
@@ -438,7 +503,7 @@ void btree_memory_manager_free(btree_memory_manager_t *manager, void *ptr) {
     
     /* 풀에 속하지 않으면 fallback 할당자 사용 */
     manager->fallback_allocator->free(ptr);
-    manager->total_freed += sizeof(void*);  /* 대략적인 크기 */
+    /* default_free에서 자동으로 크기 추적되므로 추가 업데이트 불필요 */
 }
 
 /**
