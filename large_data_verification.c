@@ -10,6 +10,35 @@ BTREE_DECLARE_INT_INT(verify);
 BTREE_DEFINE_INT_INT(verify);
 
 /**
+ * @brief Value pair structure for sorting
+ */
+typedef struct {
+    int value;
+    size_t index;
+} value_pair_t;
+
+/**
+ * @brief Comparison function for value pairs
+ */
+int compare_value_pairs(const void *a, const void *b) {
+    const value_pair_t *pa = (const value_pair_t*)a;
+    const value_pair_t *pb = (const value_pair_t*)b;
+    
+    if (pa->value < pb->value) return -1;
+    if (pa->value > pb->value) return 1;
+    return (pa->index < pb->index) ? -1 : (pa->index > pb->index) ? 1 : 0;
+}
+
+/**
+ * @brief Standard qsort comparison function for integers  
+ */
+int compare_ints(const void *a, const void *b) {
+    int ia = *(const int*)a;
+    int ib = *(const int*)b;
+    return (ia > ib) - (ia < ib);
+}
+
+/**
  * @brief Custom random data generation function
  * @param arr Output array
  * @param size Array size
@@ -22,11 +51,27 @@ void generate_random_function(int *arr, size_t size, int min_val, int max_val) {
         return;
     }
     
-    printf("Generating %zu random numbers between %d and %d...\n", size, min_val, max_val);
+    printf("Generating %zu unique random numbers between %d and %d...\n", size, min_val, max_val);
     
-    for (size_t i = 0; i < size; i++) {
-        arr[i] = min_val + (rand() % (max_val - min_val + 1));
+    /* Use simple approach to ensure uniqueness */
+    bool *used = calloc(max_val - min_val + 1, sizeof(bool));
+    if (!used) {
+        printf("Error: Memory allocation failed for uniqueness tracking\n");
+        return;
     }
+    
+    size_t generated = 0;
+    while (generated < size) {
+        int val = min_val + (rand() % (max_val - min_val + 1));
+        int index = val - min_val;
+        
+        if (!used[index]) {
+            used[index] = true;
+            arr[generated++] = val;
+        }
+    }
+    
+    free(used);
     
     printf("Random data generation completed!\n");
 }
@@ -42,25 +87,25 @@ void print_formatted_array(const char *title, const int *arr, size_t size, int c
     if (!arr || !title) return;
     
     printf("\n%s (%zu elements):\n", title, size);
-    printf("┌");
-    for (int i = 0; i < cols * 6 - 1; i++) printf("─");
-    printf("┐\n");
+    printf("+");
+    for (int i = 0; i < cols * 6 - 1; i++) printf("-");
+    printf("+\n");
     
     for (size_t i = 0; i < size; i++) {
-        if (i % cols == 0) printf("│");
+        if (i % cols == 0) printf("|");
         printf("%5d", arr[i]);
         if ((i + 1) % cols == 0 || i == size - 1) {
             if (i == size - 1 && (i + 1) % cols != 0) {
                 int remaining = cols - ((i + 1) % cols);
                 for (int j = 0; j < remaining * 5; j++) printf(" ");
             }
-            printf(" │\n");
+            printf(" |\n");
         }
     }
     
-    printf("└");
-    for (int i = 0; i < cols * 6 - 1; i++) printf("─");
-    printf("┘\n");
+    printf("+");
+    for (int i = 0; i < cols * 6 - 1; i++) printf("-");
+    printf("+\n");
 }
 
 /**
@@ -115,28 +160,30 @@ bool comprehensive_sort_verification(const int *arr, size_t size) {
     }
     printf("PASSED (%zu total elements, %d unique values)\n", size, unique_count);
     
-    /* Test 4: Duplicate handling check */
-    printf("4. Duplicate handling check: ");
-    int max_consecutive = 1, current_consecutive = 1;
+    /* Test 4: Uniqueness check (no duplicates allowed) */
+    printf("4. Uniqueness check: ");
+    bool all_unique = true;
+    int duplicates_found = 0;
     for (size_t i = 1; i < size; i++) {
         if (arr[i] == arr[i-1]) {
-            current_consecutive++;
-        } else {
-            if (current_consecutive > max_consecutive) {
-                max_consecutive = current_consecutive;
+            if (all_unique) {
+                printf("FAILED - duplicate %d found at indices %zu and %zu\n", arr[i], i-1, i);
+                all_unique = false;
             }
-            current_consecutive = 1;
+            duplicates_found++;
         }
     }
-    if (current_consecutive > max_consecutive) {
-        max_consecutive = current_consecutive;
+    if (all_unique) {
+        printf("PASSED (all elements unique)\n");
+    } else {
+        printf("Total duplicates found: %d\n", duplicates_found);
+        all_passed = false;
     }
-    printf("PASSED (max consecutive duplicates: %d)\n", max_consecutive);
     
     /* Test 5: Range verification */
     printf("5. Value range verification: ");
     bool range_valid = true;
-    int expected_min = 1, expected_max = 200; // Based on generation parameters
+    int expected_min = 0, expected_max = 10000; // Based on generation parameters
     for (size_t i = 0; i < size; i++) {
         if (arr[i] < expected_min || arr[i] > expected_max) {
             printf("FAILED - value %d out of range [%d, %d]\n", arr[i], expected_min, expected_max);
@@ -147,7 +194,7 @@ bool comprehensive_sort_verification(const int *arr, size_t size) {
     }
     if (range_valid) printf("PASSED (all values in range [%d, %d])\n", expected_min, expected_max);
     
-    printf("\nOverall verification result: %s\n", all_passed ? "✅ ALL TESTS PASSED" : "❌ SOME TESTS FAILED");
+    printf("\nOverall verification result: %s\n", all_passed ? "[OK] ALL TESTS PASSED" : "[FAIL] SOME TESTS FAILED");
     return all_passed;
 }
 
@@ -170,26 +217,25 @@ bool btree_traversal_sort_detailed(int *arr, size_t size, int degree) {
         return false;
     }
     
-    printf("Step 1: Inserting %zu elements into B-Tree...\n", size);
+    printf("Step 1: Inserting %zu unique elements into B-Tree...\n", size);
     clock_t start = clock();
     
-    /* Insert with duplicate counting */
+    /* Insert unique values (no duplicates) */
     int successful_insertions = 0;
+    int insertion_failures = 0;
+    
     for (size_t i = 0; i < size; i++) {
-        int *existing = btree_verify_search(tree, arr[i]);
-        if (existing) {
-            (*existing)++;  /* Increment count */
+        /* Insert with value as key, dummy value of 1 */
+        btree_result_t result = btree_verify_insert(tree, arr[i], 1);
+        if (result == BTREE_SUCCESS) {
+            successful_insertions++;
         } else {
-            btree_result_t result = btree_verify_insert(tree, arr[i], 1);
-            if (result == BTREE_SUCCESS) {
-                successful_insertions++;
-            } else {
-                printf("Warning: Failed to insert %d: %s\n", arr[i], btree_error_string(result));
-            }
+            printf("Warning: Failed to insert %d: %s\n", arr[i], btree_error_string(result));
+            insertion_failures++;
         }
         
         /* Progress indicator */
-        if ((i + 1) % 20 == 0 || i == size - 1) {
+        if ((i + 1) % 100 == 0 || i == size - 1) {
             printf("  Progress: %zu/%zu elements processed\r", i + 1, size);
             fflush(stdout);
         }
@@ -203,9 +249,11 @@ bool btree_traversal_sort_detailed(int *arr, size_t size, int degree) {
     printf("  - Insertion time: %.4fs\n", insert_time);
     printf("  - Unique elements stored: %zu\n", btree_verify_size(tree));
     printf("  - Tree height: %d levels\n", btree_verify_height(tree));
+    printf("  - Successful insertions: %d\n", successful_insertions);
+    printf("  - Insertion failures: %d\n", insertion_failures);
     printf("  - Average insertion rate: %.0f ops/s\n", size / insert_time);
     
-    printf("Step 3: Extracting sorted elements...\n");
+    printf("Step 3: Extracting elements in sorted order...\n");
     
     /* Find value range */
     int min_val = arr[0], max_val = arr[0];
@@ -216,17 +264,15 @@ bool btree_traversal_sort_detailed(int *arr, size_t size, int degree) {
     
     printf("  - Value range: [%d, %d]\n", min_val, max_val);
     
-    /* Extract in sorted order */
+    /* Extract in sorted order by iterating through possible values */
     size_t output_index = 0;
-    int values_processed = 0;
+    int values_found = 0;
     
     for (int val = min_val; val <= max_val && output_index < size; val++) {
-        int *count = btree_verify_search(tree, val);
-        if (count && *count > 0) {
-            for (int i = 0; i < *count && output_index < size; i++) {
-                arr[output_index++] = val;
-            }
-            values_processed++;
+        int *found = btree_verify_search(tree, val);
+        if (found) {
+            arr[output_index++] = val;
+            values_found++;
         }
     }
     
@@ -236,7 +282,7 @@ bool btree_traversal_sort_detailed(int *arr, size_t size, int degree) {
     
     printf("Step 4: Extraction completed\n");
     printf("  - Extraction time: %.4fs\n", extract_time);
-    printf("  - Values processed: %d\n", values_processed);
+    printf("  - Values found: %d\n", values_found);
     printf("  - Elements extracted: %zu/%zu\n", output_index, size);
     printf("  - Total sorting time: %.4fs\n", total_time);
     printf("  - Overall sorting rate: %.0f ops/s\n", size / total_time);
@@ -247,14 +293,7 @@ bool btree_traversal_sort_detailed(int *arr, size_t size, int degree) {
     return output_index == size;
 }
 
-/**
- * @brief Standard qsort comparison function for integers
- */
-int compare_ints(const void *a, const void *b) {
-    int ia = *(const int*)a;
-    int ib = *(const int*)b;
-    return (ia > ib) - (ia < ib);
-}
+
 
 /**
  * @brief Compare with standard qsort
@@ -308,7 +347,7 @@ void compare_with_qsort(const int *original, size_t size) {
     
     /* Correctness verification */
     bool results_match = (memcmp(btree_copy, qsort_copy, size * sizeof(int)) == 0);
-    printf("Results match: %s\n", results_match ? "✅ YES" : "❌ NO");
+    printf("Results match: %s\n", results_match ? "[OK] YES" : "[FAIL] NO");
     
     if (!results_match) {
         printf("First 10 elements comparison:\n");
@@ -327,10 +366,10 @@ void compare_with_qsort(const int *original, size_t size) {
  * @brief Main verification program
  */
 int main() {
-    printf("╔════════════════════════════════════════╗\n");
-    printf("║    B-Tree Large Data Verification     ║\n");
-    printf("║          Version: %s              ║\n", btree_version_string());
-    printf("╚════════════════════════════════════════╝\n\n");
+    printf("+===========================================+\n");
+    printf("|    B-Tree Large Data Verification      |\n");
+    printf("|          Version: %s               |\n", btree_version_string());
+    printf("+===========================================+\n\n");
     
     /* Initialize random seed */
     srand((unsigned int)time(NULL));
@@ -341,8 +380,8 @@ int main() {
         return 1;
     }
     
-    /* Test with 100 elements */
-    const size_t test_size = 100;
+    /* Test with 1000 elements */
+    const size_t test_size = 1000;
     printf("Testing with %zu elements...\n", test_size);
     
     /* Allocate memory */
@@ -357,8 +396,8 @@ int main() {
         return 1;
     }
     
-    /* Generate random data using custom function */
-    generate_random_function(original_data, test_size, 1, 200);
+    /* Generate unique random data using custom function */
+    generate_random_function(original_data, test_size, 0, 10000);
     
     /* Display original data */
     print_formatted_array("Original Random Data", original_data, test_size, 10);
@@ -367,7 +406,7 @@ int main() {
     memcpy(sorted_data, original_data, test_size * sizeof(int));
     
     /* Perform B-Tree sorting */
-    printf("\n" "═" "═" "═" " Starting B-Tree Sorting Process " "═" "═" "═" "\n");
+    printf("\n=== Starting B-Tree Sorting Process ===\n");
     bool sorting_success = btree_traversal_sort_detailed(sorted_data, test_size, 16);
     
     if (sorting_success) {
@@ -378,23 +417,23 @@ int main() {
         bool verification_passed = comprehensive_sort_verification(sorted_data, test_size);
         
         if (verification_passed) {
-            printf("\n🎉 B-Tree sorting verification: PASSED!\n");
+            printf("\n[SUCCESS] B-Tree sorting verification: PASSED!\n");
         } else {
-            printf("\n❌ B-Tree sorting verification: FAILED!\n");
+            printf("\n[FAIL] B-Tree sorting verification: FAILED!\n");
         }
         
         /* Compare with qsort */
         compare_with_qsort(original_data, test_size);
         
     } else {
-        printf("\n❌ B-Tree sorting failed!\n");
+        printf("\n[FAIL] B-Tree sorting failed!\n");
     }
     
     /* Memory statistics */
     printf("\n=== Memory Usage Statistics ===\n");
     btree_memory_print_stats(stdout);
     
-    printf("\n" "═" "═" "═" " Verification Complete " "═" "═" "═" "\n");
+    printf("\n=== Verification Complete ===\n");
     
     bool final_result = sorting_success;
     if (sorting_success) {
